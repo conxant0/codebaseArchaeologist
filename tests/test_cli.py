@@ -1,4 +1,5 @@
 import unittest
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -9,14 +10,13 @@ class CliTest(unittest.TestCase):
     def setUp(self):
         self.runner = CliRunner()
 
-    def test_index_prints_placeholder(self):
+    @patch("codearch.cli.ingest_repo")
+    def test_index_ingests_repo(self, mock_ingest_repo):
         result = self.runner.invoke(app, ["index", "https://github.com/example/repo"])
 
         self.assertEqual(result.exit_code, 0)
-        self.assertIn(
-            "Indexing placeholder for https://github.com/example/repo",
-            result.output,
-        )
+        mock_ingest_repo.assert_called_once_with("https://github.com/example/repo")
+        self.assertIn("Indexed https://github.com/example/repo", result.output)
 
     def test_ask_prints_placeholder(self):
         result = self.runner.invoke(app, ["ask", "Where is auth handled?"])

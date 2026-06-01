@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "codebase-archaeologist"
+version = "0.1.0"
+description = "CLI for indexing and querying codebase history."
+requires-python = ">=3.12"
+dependencies = [
+    "chromadb",
+    "groq",
+    "python-dotenv",
+    "requests",
+    "sentence-transformers",
+    "typer",
+]
+
+[project.scripts]
+codearch = "codearch.cli:app"
+
+[tool.setuptools.packages.find]
+include = ["codearch*"]
