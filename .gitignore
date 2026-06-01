@@ -7,4 +7,5 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 chroma_db/
+data/raw/
 .DS_Store
