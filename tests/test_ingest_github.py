@@ -55,6 +55,31 @@ class GitHubIngestionTest(unittest.TestCase):
 
     @patch("codearch.ingest_github.requests.get")
     @patch("codearch.ingest_github.load_dotenv")
+    def test_fetch_issues_filters_pull_request_records(
+        self,
+        mock_load_dotenv,
+        mock_get,
+    ):
+        mock_response = Mock()
+        mock_response.json.return_value = [
+            {"number": 1, "title": "Real issue"},
+            {
+                "number": 2,
+                "title": "Pull request returned by issues endpoint",
+                "pull_request": {"url": "https://api.github.com/repos/o/r/pulls/2"},
+            },
+        ]
+        mock_response.raise_for_status.return_value = None
+        mock_get.return_value = mock_response
+
+        with patch.dict("os.environ", {}, clear=True):
+            result = fetch_issues("owner", "repo")
+
+        self.assertEqual(result, [{"number": 1, "title": "Real issue"}])
+        mock_load_dotenv.assert_called_once()
+
+    @patch("codearch.ingest_github.requests.get")
+    @patch("codearch.ingest_github.load_dotenv")
     def test_fetch_pull_requests_uses_pulls_endpoint(self, mock_load_dotenv, mock_get):
         mock_response = Mock()
         mock_response.json.return_value = [{"number": 2}]

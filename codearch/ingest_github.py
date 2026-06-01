@@ -47,10 +47,11 @@ def _github_get(path: str, params=None):
 
 
 def fetch_issues(owner: str, repo: str, limit=50):
-    return _github_get(
+    records = _github_get(
         f"/repos/{owner}/{repo}/issues",
         params={"per_page": limit, "state": "all"},
     )
+    return [record for record in records if "pull_request" not in record]
 
 
 def fetch_pull_requests(owner: str, repo: str, limit=50):
