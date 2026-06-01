@@ -1,7 +1,9 @@
+import os
 from pathlib import Path
 
 import chromadb
 from dotenv import load_dotenv
+from groq import Groq
 from sentence_transformers import SentenceTransformer
 
 DATA_DIR = Path("data")
@@ -29,7 +31,23 @@ def chunk_text(text: str):
 
 
 def build_chroma_collection(chunks, embedder):
-    pass
+    texts = [chunk["text"] for chunk in chunks]
+    embeddings = embedder.encode(texts)
+
+    client = chromadb.Client()
+    collection = client.get_or_create_collection(COLLECTION_NAME)
+
+    ids = [f"doc_{i}" for i in range(len(chunks))]
+    metadatas = [{"source": chunk["source"]} for chunk in chunks]
+
+    collection.add(
+        ids=ids,
+        documents=texts,
+        embeddings=embeddings.tolist(),
+        metadatas=metadatas,
+    )
+
+    return collection
 
 
 def retrieve_relevant_chunks(question: str, collection, embedder, top_k: int = 3):
@@ -59,7 +77,42 @@ def retrieve_relevant_chunks(question: str, collection, embedder, top_k: int = 3
 
 
 def ask_groq(question: str, chunks):
-    pass
+    context_parts = []
+
+    for chunk in chunks:
+        context_parts.append(
+            f"[Source: {chunk['source']}]\n"
+            f"{chunk['text']}"
+        )
+
+    context = "\n\n".join(context_parts)
+
+    prompt = (
+        "Answer the question using only the context below. "
+        "If the context does not contain the answer, say you do not know.\n\n"
+        f"Context:\n\n{context}\n\n"
+        f"Question:\n{question}"
+    )
+
+    client = Groq(api_key=os.environ["GROQ_API_KEY"])
+
+    response = client.chat.completions.create(
+        model=os.environ.get("GROQ_MODEL", "llama-3.1-8b-instant"),
+        messages=[
+            {
+                "role": "system",
+                "content": "You answer questions using only the provided context.",
+            },
+            {
+                "role": "user",
+                "content": prompt,
+            },
+        ],
+        temperature=0,
+        max_completion_tokens=300,
+    )
+
+    return response.choices[0].message.content
 
 
 def main():
@@ -70,23 +123,7 @@ def main():
 
     embedder = SentenceTransformer("all-MiniLM-L6-v2")
 
-    texts = [doc["text"] for doc in documents]
-    embeddings = embedder.encode(texts)
-
-    client = chromadb.Client()
-
-    collection = client.get_or_create_collection(COLLECTION_NAME)
-
-    ids = [f"doc_{i}" for i in range(len(documents))]
-    metadatas = [{"source": doc["source"]} for doc in documents]
-
-    collection.add(
-        ids=ids,
-        documents=texts,
-        embeddings=embeddings.tolist(),
-        metadatas=metadatas,
-    )
-
+    collection = build_chroma_collection(documents, embedder)
     print(f"Stored {collection.count()} documents in Chroma")
 
     question = "What happens when an access token expires?"
@@ -98,11 +135,9 @@ def main():
         top_k=3,
     )
 
-    for chunk in chunks:
-        print("=" * 80)
-        print(f"Source: {chunk['source']}")
-        print(f"Distance: {chunk['distance']}")
-        print(chunk["text"][:500])
+    answer = ask_groq(question, chunks)
+
+    print(answer)
 
 
 if __name__ == "__main__":
