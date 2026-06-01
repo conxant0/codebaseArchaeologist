@@ -1,0 +1,36 @@
+Source: src/auth/session.ts
+
+export async function refreshSession() {
+  const refreshToken = sessionStorage.getRefreshToken();
+
+  if (!refreshToken) {
+    throw new Error("Cannot refresh session without a refresh token");
+  }
+
+  const response = await fetch("/auth/refresh", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ refreshToken }),
+  });
+
+  if (!response.ok) {
+    sessionStorage.clear();
+    throw new Error("Session refresh failed");
+  }
+
+  const tokens = await response.json();
+
+  sessionStorage.setAccessToken(tokens.accessToken);
+  sessionStorage.setRefreshToken(tokens.refreshToken);
+
+  return tokens.accessToken;
+}
+
+Source: src/api/httpClient.ts
+
+// When a request fails because the access token expired, the client calls
+// refreshSession() once and retries with the renewed access token.
+// If refresh fails, the user is logged out because the session can no longer
+// be trusted.

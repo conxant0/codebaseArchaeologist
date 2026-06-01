@@ -1,0 +1,16 @@
+Authentication Design Notes: Access tokens and refresh tokens
+
+Last updated: 2026-02-09
+
+The application uses short-lived access tokens for API authorization. Access tokens expire after 15 minutes to limit the impact of token theft.
+
+The application also uses refresh tokens for session continuity. A refresh token can be exchanged for a new access token without asking the user to log in again, as long as the refresh token is still valid.
+
+Refresh token rotation:
+Every successful refresh returns a new refresh token. The old refresh token must be discarded immediately. If an old refresh token is reused, the server may treat that as a suspicious event and revoke the session.
+
+Client responsibility:
+The client should not log out a user just because an access token expired. It should first attempt a session refresh. The session should only be cleared when there is no refresh token or when the refresh request fails.
+
+Rationale:
+This design keeps access tokens short-lived while preserving a smooth user experience. It also centralizes the renewal behavior so all protected API calls follow the same authentication rules.

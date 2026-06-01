@@ -1,0 +1,23 @@
+Commit 8f42c91: Implement refreshSession and retry expired requests
+
+Date: 2026-02-08
+Author: Luis Navarro
+
+Summary:
+Implemented the session refresh path described in PR #219.
+
+Files changed:
+- src/auth/session.ts
+- src/api/httpClient.ts
+- src/auth/sessionStorage.ts
+
+Details:
+The new refreshSession() function reads the current refresh token from session storage and calls POST /auth/refresh. When the server returns a new access token and a rotated refresh token, both values are saved before any retried request is sent.
+
+The HTTP client now handles a 401 response by checking whether the failed request has already been retried. If it has not, the client calls refreshSession() and retries the original request with the new access token.
+
+Failure behavior:
+If refreshSession() cannot find a refresh token, or if POST /auth/refresh fails, the client clears the local session and lets the user return to the login screen.
+
+Why this commit was needed:
+Before this change, access token expiry was treated the same as logout. This commit separates normal token renewal from real authentication failure.

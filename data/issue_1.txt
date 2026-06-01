@@ -1,0 +1,22 @@
+GitHub Issue #184: Users are logged out after access token expiry
+
+Opened by: Maya Chen
+Date: 2026-02-03
+Labels: bug, auth, session-management
+
+Several customers reported that they are being redirected to the login page while actively using the dashboard. The issue appears after roughly 15 minutes, which matches the current access token lifetime.
+
+Reproduction notes:
+1. Sign in with a valid account.
+2. Leave the dashboard open for 15 minutes.
+3. Click "Save report" or navigate to a protected page.
+4. The API returns 401 and the frontend clears the local session.
+
+Expected behavior:
+The user should remain signed in as long as the refresh token is valid. A short-lived access token should expire without forcing the user to manually log in again.
+
+Current behavior:
+The frontend only checks whether an access token exists. It does not try to exchange a valid refresh token for a new access token before treating the session as invalid.
+
+Notes from triage:
+The backend already issues refresh tokens, but the client has no single flow for renewing a session. Each API caller handles 401 responses differently, which creates inconsistent behavior.

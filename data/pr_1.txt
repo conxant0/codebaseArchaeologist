@@ -1,0 +1,23 @@
+Pull Request #219: Add refreshSession flow for expiring access tokens
+
+Author: Luis Navarro
+Date: 2026-02-06
+Linked issue: #184
+
+This pull request introduces a shared refreshSession() function and updates authenticated API requests to use it when an access token has expired.
+
+Motivation:
+Issue #184 showed that users were being logged out even when their refresh token was still valid. The access token is intentionally short-lived, but the client had no central way to renew it. As a result, any 401 response was treated as a full logout.
+
+Proposal:
+- Add refreshSession() in the auth client.
+- Send the current refresh token to the token refresh endpoint.
+- Store the returned access token and rotated refresh token together.
+- Retry the original API request once after a successful refresh.
+- Clear the session only when refresh fails.
+
+Security notes:
+The refresh endpoint rotates refresh tokens. The client must replace the old refresh token immediately after a successful refresh so reused tokens are not accepted later.
+
+Review summary:
+The reviewers agreed that refreshSession() should be the only place that knows how to renew tokens. This avoids duplicating refresh logic across dashboard, billing, and report-saving code paths.
