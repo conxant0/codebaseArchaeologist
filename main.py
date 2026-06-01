@@ -33,7 +33,29 @@ def build_chroma_collection(chunks, embedder):
 
 
 def retrieve_relevant_chunks(question: str, collection, embedder, top_k: int = 3):
-    pass
+    question_embedding = embedder.encode(question)
+
+    results = collection.query(
+        query_embeddings=[question_embedding.tolist()],
+        n_results=top_k,
+    )
+
+    chunks = []
+
+    for doc, metadata, distance in zip(
+        results["documents"][0],
+        results["metadatas"][0],
+        results["distances"][0],
+    ):
+        chunks.append(
+            {
+                "source": metadata["source"],
+                "text": doc,
+                "distance": distance,
+            }
+        )
+
+    return chunks
 
 
 def ask_groq(question: str, chunks):
@@ -67,19 +89,20 @@ def main():
 
     print(f"Stored {collection.count()} documents in Chroma")
 
-    question = "Why was refreshSession added?"
+    question = "What happens when an access token expires?"
 
-    question_embedding = embedder.encode(question)
-
-    results = collection.query(
-        query_embeddings=[question_embedding.tolist()],
-        n_results=3,
+    chunks = retrieve_relevant_chunks(
+        question=question,
+        collection=collection,
+        embedder=embedder,
+        top_k=3,
     )
 
-    print(results)
-
-    print(type(embeddings))
-    print(embeddings.shape)
+    for chunk in chunks:
+        print("=" * 80)
+        print(f"Source: {chunk['source']}")
+        print(f"Distance: {chunk['distance']}")
+        print(chunk["text"][:500])
 
 
 if __name__ == "__main__":
