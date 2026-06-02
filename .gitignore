@@ -8,4 +8,5 @@ __pycache__/
 .ruff_cache/
 chroma_db/
 data/raw/
+data/processed/
 .DS_Store
