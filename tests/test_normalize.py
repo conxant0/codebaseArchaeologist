@@ -63,14 +63,37 @@ class NormalizeTest(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
+            (repo_raw_dir / "docs.json").write_text(
+                json.dumps(
+                    [
+                        {
+                            "path": "README.md",
+                            "url": "https://github.com/owner/repo/blob/main/README.md",
+                            "text": "Project overview and architecture notes.",
+                        }
+                    ]
+                ),
+                encoding="utf-8",
+            )
 
             with (
                 patch("codearch.normalize.RAW_DATA_DIR", raw_dir),
                 patch("codearch.normalize.PROCESSED_DATA_DIR", processed_dir),
+                patch("codearch.normalize.CHROMA_DATA_DIR", Path(temp_dir) / "chroma"),
             ):
-                artifacts = normalize_repo("owner", "repo")
+                artifacts = normalize_repo(
+                    "owner",
+                    "repo",
+                    mode="standard",
+                    fetched_counts={
+                        "issues": 1,
+                        "pull_requests": 1,
+                        "commits": 1,
+                        "docs": 1,
+                    },
+                )
 
-            self.assertEqual(len(artifacts), 3)
+            self.assertEqual(len(artifacts), 4)
 
             issue = artifacts[0]
             self.assertEqual(issue["id"], "issue_123")
@@ -105,10 +128,58 @@ class NormalizeTest(unittest.TestCase):
             self.assertIn("SHA: abcdef1234567890", commit["text"])
             self.assertEqual(commit["metadata"]["type"], "commit")
 
+            doc = artifacts[3]
+            self.assertTrue(doc["id"].startswith("doc_readme_md_"))
+            self.assertEqual(doc["source"], "Doc: README.md")
+            self.assertIn("Path: README.md", doc["text"])
+            self.assertIn("Project overview and architecture notes.", doc["text"])
+            self.assertEqual(
+                doc["metadata"],
+                {
+                    "type": "documentation",
+                    "repo": "owner/repo",
+                    "path": "README.md",
+                    "url": "https://github.com/owner/repo/blob/main/README.md",
+                },
+            )
+
             artifacts_path = processed_dir / "owner_repo" / "artifacts.jsonl"
             lines = artifacts_path.read_text(encoding="utf-8").splitlines()
-            self.assertEqual(len(lines), 3)
+            self.assertEqual(len(lines), 4)
             self.assertEqual([json.loads(line) for line in lines], artifacts)
+
+            manifest_path = processed_dir / "owner_repo" / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["repo"], "owner/repo")
+            self.assertEqual(manifest["mode"], "standard")
+            self.assertEqual(
+                manifest["fetched_counts"],
+                {
+                    "issues": 1,
+                    "pull_requests": 1,
+                    "commits": 1,
+                    "docs": 1,
+                },
+            )
+            self.assertEqual(
+                manifest["indexed_artifact_counts"],
+                {
+                    "issues": 1,
+                    "pull_requests": 1,
+                    "commits": 1,
+                    "documentation": 1,
+                },
+            )
+            self.assertEqual(manifest["latest_commit_sha"], "abcdef1234567890")
+            self.assertEqual(manifest["raw_data_path"], str(raw_dir / "owner_repo"))
+            self.assertEqual(
+                manifest["processed_artifacts_path"],
+                str(processed_dir / "owner_repo" / "artifacts.jsonl"),
+            )
+            self.assertEqual(
+                manifest["chroma_path"],
+                str(Path(temp_dir) / "chroma" / "owner_repo"),
+            )
 
 
 if __name__ == "__main__":
