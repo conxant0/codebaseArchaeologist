@@ -1,0 +1,16 @@
+[
+  {
+    "repo": "fastapi_fastapi",
+    "question": "Why is stream_item_type lost when an APIRouter is included?",
+    "expected_sources": [
+      "Pull Request #15426"
+    ]
+  },
+  {
+    "repo": "fastapi_fastapi",
+    "question": "Why do custom APIRoute constructors fail after strict_content_type was added?",
+    "expected_sources": [
+      "Issue #15503"
+    ]
+  }
+]

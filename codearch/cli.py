@@ -7,6 +7,10 @@ from pathlib import Path
 
 import typer
 
+from codearch.eval import evaluate_question
+from codearch.eval import load_evaluation_file
+from codearch.eval import print_evaluation_summary
+from codearch.eval import write_evaluation_csv
 from codearch.generate import GroqConfigurationError
 from codearch.generate import answer_question
 from codearch.generate import compute_evidence_strength
@@ -202,6 +206,31 @@ def context(
     typer.echo(f'"Read {out} first. Then help me with: {change_request}"')
 
 
+@app.command("eval")
+def eval_command(
+    evaluation_file: str,
+    csv: str | None = typer.Option(None, "--csv"),
+):
+    """Evaluate whether retrieval finds expected evidence sources."""
+    _configure_terminal_output()
+    try:
+        cases = load_evaluation_file(evaluation_file)
+    except (OSError, ValueError) as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)
+
+    results = []
+    for case in cases:
+        owner, repo_name = _parse_evaluation_repo(case["repo"])
+        artifacts = _retrieve_artifacts_or_exit(owner, repo_name, case["question"])
+        results.append(evaluate_question(case, artifacts))
+
+    print_evaluation_summary(results, output=typer.echo)
+
+    if csv:
+        write_evaluation_csv(results, csv)
+
+
 def _indexed_artifact_counts(artifacts: list[dict]) -> dict[str, int]:
     counts = {
         "issues": 0,
@@ -234,6 +263,20 @@ def _parse_repo_option(repo: str) -> tuple[str, str]:
         raise typer.BadParameter("--repo must use owner/repo format")
 
     return owner, repo_name
+
+
+def _parse_evaluation_repo(repo: str) -> tuple[str, str]:
+    if "/" in repo:
+        return _parse_repo_option(repo)
+
+    if "_" in repo:
+        owner, repo_name = repo.split("_", maxsplit=1)
+        if owner and repo_name:
+            return owner, repo_name
+
+    raise typer.BadParameter(
+        "evaluation repo must use owner/repo or owner_repo format"
+    )
 
 
 def _retrieve_artifacts_or_exit(owner: str, repo: str, query: str) -> list[dict]:

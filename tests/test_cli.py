@@ -1,4 +1,5 @@
 import os
+import json
 import tempfile
 import unittest
 import warnings
@@ -587,6 +588,104 @@ class CliTest(unittest.TestCase):
             result.output,
         )
         self.assertNotIn("Traceback", result.output)
+
+    @patch("codearch.cli.answer_question")
+    @patch("codearch.cli.retrieve_relevant_artifacts")
+    def test_eval_reports_retrieval_recall_without_calling_groq(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_answer_question,
+    ):
+        mock_retrieve_relevant_artifacts.side_effect = [
+            [
+                {"source": "Issue #184", "distance": 0.2, "metadata": {"type": "issue"}},
+                {
+                    "source": "Pull Request #219",
+                    "distance": 0.3,
+                    "metadata": {"type": "pull_request"},
+                },
+                {"source": "Commit 8f42c91", "distance": 0.4, "metadata": {"type": "commit"}},
+            ],
+            [
+                {"source": "Authentication Design Notes", "distance": 0.5, "metadata": {"type": "documentation"}},
+            ],
+            [
+                {"source": "Commit deadbee", "distance": 0.7, "metadata": {"type": "commit"}},
+            ],
+        ]
+        cases = [
+            {
+                "repo": "sample/repo",
+                "question": "Why was refreshSession added?",
+                "expected_sources": ["Issue #184", "Pull Request #219"],
+            },
+            {
+                "repo": "sample/repo",
+                "question": "What happens when an access token expires?",
+                "expected_sources": ["Authentication Design Notes"],
+            },
+            {
+                "repo": "sample/repo",
+                "question": "Where are refresh tokens revoked?",
+                "expected_sources": ["Issue #999"],
+            },
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            eval_path = Path(temp_dir) / "eval.json"
+            eval_path.write_text(json.dumps(cases), encoding="utf-8")
+            result = self.runner.invoke(app, ["eval", str(eval_path)])
+
+        self.assertEqual(result.exit_code, 0)
+        mock_answer_question.assert_not_called()
+        self.assertEqual(mock_retrieve_relevant_artifacts.call_count, 3)
+        mock_retrieve_relevant_artifacts.assert_any_call(
+            "sample",
+            "repo",
+            "Why was refreshSession added?",
+        )
+        self.assertIn("Evaluation Results", result.output)
+        self.assertIn("Questions Evaluated: 3", result.output)
+        self.assertIn("Average Recall@K: 0.67", result.output)
+        self.assertIn("Perfect Retrievals: 2", result.output)
+        self.assertIn("Partial Retrievals: 0", result.output)
+        self.assertIn("Missed Retrievals: 1", result.output)
+        self.assertIn("Recall@K: 1.0", result.output)
+        self.assertIn("- Pull Request #219", result.output)
+        self.assertIn("Status:\nPASS", result.output)
+
+    @patch("codearch.cli.retrieve_relevant_artifacts")
+    def test_eval_writes_csv_output(self, mock_retrieve_relevant_artifacts):
+        mock_retrieve_relevant_artifacts.return_value = [
+            {"source": "Issue #184", "distance": 0.2, "metadata": {"type": "issue"}},
+        ]
+        cases = [
+            {
+                "repo": "sample_repo",
+                "question": "Why was refreshSession added?",
+                "expected_sources": ["Issue #184", "Pull Request #219"],
+            }
+        ]
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            eval_path = Path(temp_dir) / "eval.json"
+            csv_path = Path(temp_dir) / "results.csv"
+            eval_path.write_text(json.dumps(cases), encoding="utf-8")
+            result = self.runner.invoke(
+                app,
+                ["eval", str(eval_path), "--csv", str(csv_path)],
+            )
+            csv_output = csv_path.read_text(encoding="utf-8")
+
+        self.assertEqual(result.exit_code, 0)
+        mock_retrieve_relevant_artifacts.assert_called_once_with(
+            "sample",
+            "repo",
+            "Why was refreshSession added?",
+        )
+        self.assertIn("question,recall,status,expected,retrieved", csv_output)
+        self.assertIn("Why was refreshSession added?", csv_output)
+        self.assertIn("0.5,PARTIAL", csv_output)
 
     @patch("codearch.cli.generate_context_pack")
     @patch("codearch.cli.retrieve_relevant_artifacts")
