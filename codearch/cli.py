@@ -9,6 +9,7 @@ import typer
 
 from codearch.generate import GroqConfigurationError
 from codearch.generate import answer_question
+from codearch.generate import compute_evidence_strength
 from codearch.generate import generate_context_pack
 from codearch.index import CHROMA_DATA_DIR
 from codearch.index import build_index
@@ -139,14 +140,22 @@ def ask(question: str, repo: str = typer.Option(..., "--repo")):
     if _retrieved_evidence_is_weak(artifacts):
         typer.echo(WEAK_EVIDENCE_WARNING)
 
+    evidence_strength = compute_evidence_strength(artifacts)
+
     try:
-        answer = answer_question(question, artifacts)
+        answer = answer_question(
+            question,
+            artifacts,
+            evidence_strength=evidence_strength,
+        )
     except GroqConfigurationError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1)
 
     typer.echo("Question:")
     typer.echo(question)
+    typer.echo("")
+    typer.echo(f"Evidence Strength: {evidence_strength}")
     typer.echo("")
     typer.echo("Historical Findings")
     typer.echo("")
@@ -158,7 +167,11 @@ def ask(question: str, repo: str = typer.Option(..., "--repo")):
 
 
 @app.command()
-def context(change_request: str, repo: str = typer.Option(..., "--repo")):
+def context(
+    change_request: str,
+    repo: str = typer.Option(..., "--repo"),
+    out: str = typer.Option(".codearch/context.md", "--out"),
+):
     """Prepare historical context for a planned code change."""
     _configure_terminal_output()
     owner, repo_name = _parse_repo_option(repo)
@@ -167,29 +180,26 @@ def context(change_request: str, repo: str = typer.Option(..., "--repo")):
     if _retrieved_evidence_is_weak(artifacts):
         typer.echo(WEAK_EVIDENCE_WARNING)
 
+    evidence_strength = compute_evidence_strength(artifacts)
+
     try:
-        context_pack = generate_context_pack(change_request, artifacts)
+        context_pack = generate_context_pack(
+            change_request,
+            artifacts,
+            evidence_strength=evidence_strength,
+        )
     except GroqConfigurationError as exc:
         typer.echo(str(exc))
         raise typer.Exit(code=1)
 
-    separator = "=" * 80
-    typer.echo(separator)
+    output_path = Path(out)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(context_pack, encoding="utf-8")
+
+    typer.echo(f"Created context pack: {out}")
     typer.echo("")
-    typer.echo("CHANGE REQUEST")
-    typer.echo("")
-    typer.echo(change_request)
-    typer.echo("")
-    typer.echo(separator)
-    typer.echo("")
-    typer.echo(context_pack)
-    typer.echo("")
-    typer.echo(separator)
-    typer.echo("")
-    typer.echo("SOURCES")
-    typer.echo("")
-    for source in _unique_sources(artifacts):
-        typer.echo(f"- {source}")
+    typer.echo("Suggested next prompt for your AI coding tool:")
+    typer.echo(f'"Read {out} first. Then help me with: {change_request}"')
 
 
 def _indexed_artifact_counts(artifacts: list[dict]) -> dict[str, int]:

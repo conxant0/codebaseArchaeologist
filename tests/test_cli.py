@@ -394,6 +394,7 @@ class CliTest(unittest.TestCase):
         mock_answer_question.assert_called_once_with(
             "Why was dependency injection added?",
             mock_retrieve_relevant_artifacts.return_value,
+            evidence_strength="strong",
         )
         self.assertIn(
             "Dependency injection was added to improve testing (Pull Request #1).",
@@ -401,6 +402,7 @@ class CliTest(unittest.TestCase):
         )
         self.assertIn("Question:", result.output)
         self.assertIn("Why was dependency injection added?", result.output)
+        self.assertIn("Evidence Strength: strong", result.output)
         self.assertIn("Historical Findings", result.output)
         self.assertIn("Sources:", result.output)
         self.assertIn("- Pull Request #1", result.output)
@@ -588,7 +590,7 @@ class CliTest(unittest.TestCase):
 
     @patch("codearch.cli.generate_context_pack")
     @patch("codearch.cli.retrieve_relevant_artifacts")
-    def test_context_generates_context_pack_for_repo(
+    def test_context_writes_context_pack_to_default_path(
         self,
         mock_retrieve_relevant_artifacts,
         mock_generate_context_pack,
@@ -605,27 +607,35 @@ class CliTest(unittest.TestCase):
                 "id": "issue_1105",
                 "source": "Issue #1105",
                 "text": "Title: Using Depends outside routes",
-                "distance": 0.94,
+                "distance": 1.0,
                 "metadata": {"type": "issue"},
             },
         ]
         mock_generate_context_pack.return_value = (
-            "RELEVANT HISTORICAL EVIDENCE\n\n"
-            "Pull Request #3669\n"
-            "Distance: 0.86\n\n"
-            "Summary:\nDependency execution was centralized.\n\n"
-            "CONSTRAINTS\n- Preserve execution/concurrency separation."
+            "# Codebase Archaeologist Context Pack\n\n"
+            "## Change Request\n\n"
+            "Modify dependency injection behavior\n\n"
+            "## Evidence Strength\n\n"
+            "partial\n"
         )
 
-        result = self.runner.invoke(
-            app,
-            [
-                "context",
-                "Modify dependency injection behavior",
-                "--repo",
-                "fastapi/fastapi",
-            ],
-        )
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.chdir(temp_dir)
+            try:
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "context",
+                        "Modify dependency injection behavior",
+                        "--repo",
+                        "fastapi/fastapi",
+                    ],
+                )
+                context_path = Path(".codearch/context.md")
+                written_context = context_path.read_text(encoding="utf-8")
+            finally:
+                os.chdir(original_cwd)
 
         self.assertEqual(result.exit_code, 0)
         mock_retrieve_relevant_artifacts.assert_called_once_with(
@@ -636,16 +646,68 @@ class CliTest(unittest.TestCase):
         mock_generate_context_pack.assert_called_once_with(
             "Modify dependency injection behavior",
             mock_retrieve_relevant_artifacts.return_value,
+            evidence_strength="partial",
         )
-        self.assertIn("=" * 80, result.output)
-        self.assertIn("CHANGE REQUEST", result.output)
-        self.assertIn("Modify dependency injection behavior", result.output)
-        self.assertIn("RELEVANT HISTORICAL EVIDENCE", result.output)
-        self.assertIn("CONSTRAINTS", result.output)
-        self.assertIn("SOURCES", result.output)
-        self.assertIn("- Pull Request #3669", result.output)
-        self.assertIn("- Issue #1105", result.output)
-        self.assertNotIn("Context placeholder", result.output)
+        self.assertEqual(written_context, mock_generate_context_pack.return_value)
+        self.assertIn("Created context pack: .codearch/context.md", result.output)
+        self.assertIn(
+            'Suggested next prompt for your AI coding tool:\n'
+            '"Read .codearch/context.md first. Then help me with: '
+            'Modify dependency injection behavior"',
+            result.output,
+        )
+        self.assertNotIn("RELEVANT HISTORICAL EVIDENCE", result.output)
+
+    @patch("codearch.cli.generate_context_pack")
+    @patch("codearch.cli.retrieve_relevant_artifacts")
+    def test_context_writes_context_pack_to_custom_path(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_generate_context_pack,
+    ):
+        mock_retrieve_relevant_artifacts.return_value = [
+            {
+                "id": "issue_1105",
+                "source": "Issue #1105",
+                "text": "Title: Using Depends outside routes",
+                "distance": 0.94,
+                "metadata": {"type": "issue"},
+            },
+        ]
+        mock_generate_context_pack.return_value = (
+            "# Codebase Archaeologist Context Pack\n\n"
+            "## Change Request\n\n"
+            "Modify dependency injection behavior\n"
+        )
+
+        original_cwd = os.getcwd()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            os.chdir(temp_dir)
+            try:
+                result = self.runner.invoke(
+                    app,
+                    [
+                        "context",
+                        "Modify dependency injection behavior",
+                        "--repo",
+                        "fastapi/fastapi",
+                        "--out",
+                        "tmp/context/dependency.md",
+                    ],
+                )
+                context_path = Path("tmp/context/dependency.md")
+                written_context = context_path.read_text(encoding="utf-8")
+            finally:
+                os.chdir(original_cwd)
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertEqual(written_context, mock_generate_context_pack.return_value)
+        self.assertIn("Created context pack: tmp/context/dependency.md", result.output)
+        self.assertIn(
+            '"Read tmp/context/dependency.md first. Then help me with: '
+            'Modify dependency injection behavior"',
+            result.output,
+        )
 
     @patch("codearch.cli.generate_context_pack")
     @patch("codearch.cli.retrieve_relevant_artifacts")

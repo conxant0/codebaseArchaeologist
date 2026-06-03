@@ -2,7 +2,6 @@ import os
 
 from dotenv import load_dotenv
 
-
 DEFAULT_GROQ_MODEL = "llama-3.1-8b-instant"
 
 
@@ -10,7 +9,29 @@ class GroqConfigurationError(Exception):
     pass
 
 
-def answer_question(question: str, artifacts: list[dict]) -> str:
+def compute_evidence_strength(retrieved_artifacts: list[dict]) -> str:
+    # V1 evidence strength measures retrieval quality, not full answer correctness.
+    distances = [
+        artifact["distance"]
+        for artifact in retrieved_artifacts[:3]
+        if artifact.get("distance") is not None
+    ]
+    if not distances:
+        return "weak"
+
+    avg_distance = sum(distances) / len(distances)
+    if avg_distance < 0.9:
+        return "strong"
+    if avg_distance < 1.2:
+        return "partial"
+    return "weak"
+
+
+def answer_question(
+    question: str,
+    artifacts: list[dict],
+    evidence_strength: str,
+) -> str:
     """Generate an answer from retrieved artifacts using Groq."""
     context = _format_artifacts_context(artifacts)
     prompt = (
@@ -29,12 +50,11 @@ def answer_question(question: str, artifacts: list[dict]) -> str:
         "Then summarize what the evidence does show. "
         "Do not say 'X was added because' unless a retrieved artifact directly "
         "supports that causal claim.\n\n"
-        "Evidence Strength labels:\n"
-        "- strong: retrieved artifacts directly explain the decision\n"
-        "- partial: artifacts are related but mostly show later evolution/docs\n"
-        "- weak: artifacts are only loosely related\n\n"
+        f"Evidence Strength: {evidence_strength}\n"
+        "Use this exact Evidence Strength value. "
+        "Do not recalculate it. "
+        "Do not change it.\n\n"
         "Output one short section per useful artifact:\n"
-        "Evidence Strength: <strong|partial|weak>\n\n"
         "Artifact N: <source>\n"
         "Distance: <distance>\n\n"
         "Summary:\n"
@@ -45,41 +65,68 @@ def answer_question(question: str, artifacts: list[dict]) -> str:
         f"Question:\n{question}"
     )
 
-    return _generate(prompt, "Answer code history questions using only provided context.")
+    return _generate(
+        prompt, "Answer code history questions using only provided context."
+    )
 
 
-def generate_context_pack(change_request: str, artifacts: list[dict]) -> str:
+def generate_context_pack(
+    change_request: str,
+    artifacts: list[dict],
+    evidence_strength: str,
+) -> str:
     """Generate historical context for a planned code change."""
     context = _format_artifacts_context(artifacts)
     prompt = (
-        "Create a concise context pack for a developer before a planned code change. "
-        "Use only the provided context. "
-        "Do not answer the change request. "
-        "Do not suggest code, implementations, libraries, or next steps. "
-        "Focus on historical evidence, constraints, risks, related discussions, "
-        "and architectural decisions.\n\n"
-        "Output these sections exactly:\n"
-        "RELEVANT HISTORICAL EVIDENCE\n"
-        "<source>\n"
-        "Distance: <distance>\n\n"
-        "Summary:\n"
-        "<concise historical summary>\n\n"
-        "Potential impact:\n"
-        "<what this history may constrain or affect>\n\n"
-        "CONSTRAINTS\n"
-        "- <historical constraint>\n\n"
-        "RISKS\n"
-        "- <risk implied by the evidence>\n\n"
-        "RELATED DISCUSSIONS\n"
-        "- <source>: <short note>\n\n"
-        "If evidence is insufficient, state that in the relevant section.\n\n"
-        f"CHANGE REQUEST:\n{change_request}\n\n"
+        "You are generating a historical evidence report. "
+        "Create a concise Markdown context pack for a developer before a planned "
+        "code change. Make the context pack evidence-first. "
+        "Use only retrieved artifacts. Prefer extraction over summarization. "
+        "Prefer extracted findings and cited artifacts over interpretation. "
+        "Every major statement must be traceable to a retrieved artifact. "
+        "If retrieved artifacts do not directly support a claim, say evidence is "
+        "insufficient. If evidence is incomplete, say so. "
+        "Treat uncertainty as valuable information. "
+        "Do not infer architectural intent unless directly supported. "
+        "Do not generate risks, constraints, or recommendations unless explicitly "
+        "present in retrieved artifacts. "
+        "Do not invent constraints, risks, architectural intent, or original "
+        "motivations. Do not generate code. "
+        "The purpose is to prepare context before editing, not to edit the code.\n\n"
+        "Quality check before returning: for every major claim ask, "
+        "'Which retrieved artifact supports this claim?' If none, remove the claim.\n\n"
+        "Return only Markdown with exactly these sections:\n\n"
+        "# Codebase Archaeologist Context Pack\n\n"
+        "## Change Request\n\n"
+        f"{change_request}\n\n"
+        "## Evidence Strength\n\n"
+        f"{evidence_strength}\n\n"
+        "## Retrieved Findings\n\n"
+        "For each artifact:\n\n"
+        "### <artifact>\n\n"
+        "Type:\n"
+        "<issue/pr/commit/doc>\n\n"
+        "Finding:\n"
+        "A concise factual statement directly supported by the artifact.\n\n"
+        "Evidence:\n"
+        "Short supporting excerpt or summary.\n\n"
+        "Why Relevant:\n"
+        "Why this artifact was retrieved for the change request.\n\n"
+        "## Supported Conclusions\n\n"
+        "Only conclusions directly supported by multiple retrieved artifacts. "
+        "If there are none, say 'Evidence is insufficient for supported "
+        "conclusions.'\n\n"
+        "## Open Questions\n\n"
+        "List important questions that the retrieved evidence does NOT answer. "
+        "This section is extremely important.\n\n"
+        "## Sources\n\n"
+        "List all retrieved artifacts.\n\n"
         f"Context:\n{context}"
     )
 
     return _generate(
         prompt,
-        "You are a historical context retrieval tool for mature repositories.",
+        "You are a historian and researcher for mature software repositories.",
     )
 
 
