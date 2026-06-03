@@ -1,5 +1,7 @@
-import unittest
+import os
 import tempfile
+import unittest
+import warnings
 from pathlib import Path
 from unittest.mock import ANY
 from unittest.mock import patch
@@ -8,6 +10,7 @@ from typer.testing import CliRunner
 
 import codearch.cli as cli
 from codearch.cli import app
+from codearch.generate import GroqConfigurationError
 from codearch.ingest_github import IngestResult
 from codearch.retrieve import IndexNotFoundError
 
@@ -15,6 +18,23 @@ from codearch.retrieve import IndexNotFoundError
 class CliTest(unittest.TestCase):
     def setUp(self):
         self.runner = CliRunner()
+
+    def test_cli_configures_clean_terminal_output(self):
+        cli._configure_terminal_output()
+        self.assertEqual(os.environ["TOKENIZERS_PARALLELISM"], "false")
+
+        recorded_warnings = []
+        with warnings.catch_warnings():
+            warnings.showwarning = (
+                lambda *args, **kwargs: recorded_warnings.append(args)
+            )
+            warnings.warn(
+                "`clean_up_tokenization_spaces` was not set. "
+                "It will be set to `True` by default.",
+                FutureWarning,
+            )
+
+        self.assertEqual(recorded_warnings, [])
 
     @patch("codearch.cli.github_token_missing")
     @patch("codearch.cli.build_index")
@@ -340,8 +360,13 @@ class CliTest(unittest.TestCase):
             )
             self.assertFalse((staging_dir / "owner_repo.swap_backup").exists())
 
+    @patch("codearch.cli.answer_question")
     @patch("codearch.cli.retrieve_relevant_artifacts")
-    def test_ask_retrieves_artifacts_for_repo(self, mock_retrieve_relevant_artifacts):
+    def test_ask_retrieves_artifacts_for_repo(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_answer_question,
+    ):
         mock_retrieve_relevant_artifacts.return_value = [
             {
                 "id": "pr_1",
@@ -351,6 +376,9 @@ class CliTest(unittest.TestCase):
                 "metadata": {"type": "pull_request"},
             },
         ]
+        mock_answer_question.return_value = (
+            "Dependency injection was added to improve testing (Pull Request #1)."
+        )
 
         result = self.runner.invoke(
             app,
@@ -363,11 +391,20 @@ class CliTest(unittest.TestCase):
             "fastapi",
             "Why was dependency injection added?",
         )
-        self.assertIn("Top retrieved artifacts:", result.output)
-        self.assertIn("- source: Pull Request #1", result.output)
-        self.assertIn("type: pull_request", result.output)
-        self.assertIn("distance: 0.123", result.output)
-        self.assertIn("Title: Add dependency injection", result.output)
+        mock_answer_question.assert_called_once_with(
+            "Why was dependency injection added?",
+            mock_retrieve_relevant_artifacts.return_value,
+        )
+        self.assertIn(
+            "Dependency injection was added to improve testing (Pull Request #1).",
+            result.output,
+        )
+        self.assertIn("Question:", result.output)
+        self.assertIn("Why was dependency injection added?", result.output)
+        self.assertIn("Historical Findings", result.output)
+        self.assertIn("Sources:", result.output)
+        self.assertIn("- Pull Request #1", result.output)
+        self.assertNotIn("Top retrieved artifacts:", result.output)
 
     @patch("codearch.cli.retrieve_relevant_artifacts")
     def test_ask_prints_missing_index_message(self, mock_retrieve_relevant_artifacts):
@@ -388,8 +425,13 @@ class CliTest(unittest.TestCase):
             result.output,
         )
 
+    @patch("codearch.cli.answer_question")
     @patch("codearch.cli.retrieve_relevant_artifacts")
-    def test_ask_warns_when_top_result_is_weak(self, mock_retrieve_relevant_artifacts):
+    def test_ask_warns_when_top_result_is_weak(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_answer_question,
+    ):
         mock_retrieve_relevant_artifacts.return_value = [
             {
                 "id": "issue_1",
@@ -399,6 +441,7 @@ class CliTest(unittest.TestCase):
                 "metadata": {"type": "issue"},
             },
         ]
+        mock_answer_question.return_value = "The context is insufficient."
 
         result = self.runner.invoke(
             app,
@@ -407,15 +450,56 @@ class CliTest(unittest.TestCase):
 
         self.assertEqual(result.exit_code, 0)
         self.assertIn(
-            "Warning: retrieved artifacts may be weak matches for this question.",
+            "Warning: Retrieved artifacts are related, but may not contain a direct "
+            "historical explanation.",
             result.output,
         )
-        self.assertIn("Top retrieved artifacts:", result.output)
+        self.assertIn("The context is insufficient.", result.output)
 
+    @patch("codearch.cli.answer_question")
+    @patch("codearch.cli.retrieve_relevant_artifacts")
+    def test_ask_warns_when_all_retrieved_artifacts_are_commits(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_answer_question,
+    ):
+        mock_retrieve_relevant_artifacts.return_value = [
+            {
+                "id": "commit_abc1234",
+                "source": "Commit abc1234",
+                "text": "Message: Add authentication helper",
+                "distance": 0.42,
+                "metadata": {"type": "commit"},
+            },
+            {
+                "id": "commit_def5678",
+                "source": "Commit def5678",
+                "text": "Message: Refactor auth token parsing",
+                "distance": 0.51,
+                "metadata": {"type": "commit"},
+            },
+        ]
+        mock_answer_question.return_value = "No direct reason is available."
+
+        result = self.runner.invoke(
+            app,
+            ["ask", "Why was there no user authentication?", "--repo", "fastapi/fastapi"],
+        )
+
+        self.assertEqual(result.exit_code, 0)
+        self.assertIn(
+            "Warning: Retrieved artifacts are related, but may not contain a direct "
+            "historical explanation.",
+            result.output,
+        )
+        self.assertIn("No direct reason is available.", result.output)
+
+    @patch("codearch.cli.answer_question")
     @patch("codearch.cli.retrieve_relevant_artifacts")
     def test_ask_does_not_warn_at_weak_threshold(
         self,
         mock_retrieve_relevant_artifacts,
+        mock_answer_question,
     ):
         mock_retrieve_relevant_artifacts.return_value = [
             {
@@ -426,6 +510,7 @@ class CliTest(unittest.TestCase):
                 "metadata": {"type": "issue"},
             },
         ]
+        mock_answer_question.return_value = "Issue #1 explains the change."
 
         result = self.runner.invoke(
             app,
@@ -435,14 +520,164 @@ class CliTest(unittest.TestCase):
         self.assertEqual(result.exit_code, 0)
         self.assertNotIn("Warning:", result.output)
 
-    def test_context_prints_placeholder(self):
-        result = self.runner.invoke(app, ["context", "Add audit logging"])
+    @patch("codearch.cli.answer_question")
+    @patch("codearch.cli.retrieve_relevant_artifacts")
+    def test_ask_falls_back_to_retrieved_sources_when_answer_has_no_citations(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_answer_question,
+    ):
+        mock_retrieve_relevant_artifacts.return_value = [
+            {
+                "id": "issue_1",
+                "source": "Issue #1",
+                "text": "Title: Related issue",
+                "distance": 0.3,
+                "metadata": {"type": "issue"},
+            },
+            {
+                "id": "issue_1_duplicate",
+                "source": "Issue #1",
+                "text": "Body: Duplicate context",
+                "distance": 0.4,
+                "metadata": {"type": "issue"},
+            },
+        ]
+        mock_answer_question.return_value = "The context is insufficient."
+
+        result = self.runner.invoke(
+            app,
+            ["ask", "Why was dependency injection added?", "--repo", "fastapi/fastapi"],
+        )
 
         self.assertEqual(result.exit_code, 0)
+        self.assertIn("Sources:", result.output)
+        self.assertEqual(result.output.count("- Issue #1"), 1)
+
+    @patch("codearch.cli.answer_question")
+    @patch("codearch.cli.retrieve_relevant_artifacts")
+    def test_ask_prints_groq_configuration_error(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_answer_question,
+    ):
+        mock_retrieve_relevant_artifacts.return_value = [
+            {
+                "id": "issue_1",
+                "source": "Issue #1",
+                "text": "Title: Related issue",
+                "distance": 0.3,
+                "metadata": {"type": "issue"},
+            },
+        ]
+        mock_answer_question.side_effect = GroqConfigurationError(
+            "GROQ_API_KEY is not set. Set it in your environment or .env file."
+        )
+
+        result = self.runner.invoke(
+            app,
+            ["ask", "Why was dependency injection added?", "--repo", "fastapi/fastapi"],
+        )
+
+        self.assertEqual(result.exit_code, 1)
         self.assertIn(
-            "Context placeholder for: Add audit logging",
+            "GROQ_API_KEY is not set. Set it in your environment or .env file.",
             result.output,
         )
+        self.assertNotIn("Traceback", result.output)
+
+    @patch("codearch.cli.generate_context_pack")
+    @patch("codearch.cli.retrieve_relevant_artifacts")
+    def test_context_generates_context_pack_for_repo(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_generate_context_pack,
+    ):
+        mock_retrieve_relevant_artifacts.return_value = [
+            {
+                "id": "pr_3669",
+                "source": "Pull Request #3669",
+                "text": "Title: Join dependency execution paths",
+                "distance": 0.86,
+                "metadata": {"type": "pull_request"},
+            },
+            {
+                "id": "issue_1105",
+                "source": "Issue #1105",
+                "text": "Title: Using Depends outside routes",
+                "distance": 0.94,
+                "metadata": {"type": "issue"},
+            },
+        ]
+        mock_generate_context_pack.return_value = (
+            "RELEVANT HISTORICAL EVIDENCE\n\n"
+            "Pull Request #3669\n"
+            "Distance: 0.86\n\n"
+            "Summary:\nDependency execution was centralized.\n\n"
+            "CONSTRAINTS\n- Preserve execution/concurrency separation."
+        )
+
+        result = self.runner.invoke(
+            app,
+            [
+                "context",
+                "Modify dependency injection behavior",
+                "--repo",
+                "fastapi/fastapi",
+            ],
+        )
+
+        self.assertEqual(result.exit_code, 0)
+        mock_retrieve_relevant_artifacts.assert_called_once_with(
+            "fastapi",
+            "fastapi",
+            "Modify dependency injection behavior",
+        )
+        mock_generate_context_pack.assert_called_once_with(
+            "Modify dependency injection behavior",
+            mock_retrieve_relevant_artifacts.return_value,
+        )
+        self.assertIn("=" * 80, result.output)
+        self.assertIn("CHANGE REQUEST", result.output)
+        self.assertIn("Modify dependency injection behavior", result.output)
+        self.assertIn("RELEVANT HISTORICAL EVIDENCE", result.output)
+        self.assertIn("CONSTRAINTS", result.output)
+        self.assertIn("SOURCES", result.output)
+        self.assertIn("- Pull Request #3669", result.output)
+        self.assertIn("- Issue #1105", result.output)
+        self.assertNotIn("Context placeholder", result.output)
+
+    @patch("codearch.cli.generate_context_pack")
+    @patch("codearch.cli.retrieve_relevant_artifacts")
+    def test_context_prints_groq_configuration_error(
+        self,
+        mock_retrieve_relevant_artifacts,
+        mock_generate_context_pack,
+    ):
+        mock_retrieve_relevant_artifacts.return_value = [
+            {
+                "id": "issue_1",
+                "source": "Issue #1",
+                "text": "Title: Related issue",
+                "distance": 0.3,
+                "metadata": {"type": "issue"},
+            },
+        ]
+        mock_generate_context_pack.side_effect = GroqConfigurationError(
+            "GROQ_API_KEY is not set. Set it in your environment or .env file."
+        )
+
+        result = self.runner.invoke(
+            app,
+            ["context", "Modify dependency injection behavior", "--repo", "fastapi/fastapi"],
+        )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(
+            "GROQ_API_KEY is not set. Set it in your environment or .env file.",
+            result.output,
+        )
+        self.assertNotIn("Traceback", result.output)
 
 
 if __name__ == "__main__":

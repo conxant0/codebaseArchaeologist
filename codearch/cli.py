@@ -1,10 +1,15 @@
+import os
 import shutil
 import uuid
+import warnings
 from enum import Enum
 from pathlib import Path
 
 import typer
 
+from codearch.generate import GroqConfigurationError
+from codearch.generate import answer_question
+from codearch.generate import generate_context_pack
 from codearch.index import CHROMA_DATA_DIR
 from codearch.index import build_index
 from codearch.ingest_github import github_token_missing
@@ -18,8 +23,25 @@ from codearch.retrieve import IndexNotFoundError
 from codearch.retrieve import retrieve_relevant_artifacts
 
 
+def _configure_terminal_output():
+    os.environ["TOKENIZERS_PARALLELISM"] = "false"
+    warnings.filterwarnings(
+        "ignore",
+        message="`clean_up_tokenization_spaces` was not set.*",
+        category=FutureWarning,
+        append=False,
+    )
+
+
+_configure_terminal_output()
+
 app = typer.Typer(help="Codebase Archaeologist CLI.")
-WEAK_RESULT_DISTANCE_THRESHOLD = 1.3
+# Heuristic Chroma distance threshold; tune as retrieval quality is evaluated.
+WEAK_EVIDENCE_DISTANCE_THRESHOLD = 1.3
+WEAK_EVIDENCE_WARNING = (
+    "Warning: Retrieved artifacts are related, but may not contain a direct "
+    "historical explanation."
+)
 STAGING_DATA_DIR = RAW_DATA_DIR.parent / ".staging"
 
 
@@ -110,38 +132,64 @@ def index(
 @app.command()
 def ask(question: str, repo: str = typer.Option(..., "--repo")):
     """Retrieve relevant artifacts for a codebase question."""
-    if "/" not in repo:
-        raise typer.BadParameter("--repo must use owner/repo format")
+    _configure_terminal_output()
+    owner, repo_name = _parse_repo_option(repo)
+    artifacts = _retrieve_artifacts_or_exit(owner, repo_name, question)
 
-    owner, repo_name = repo.split("/", maxsplit=1)
-    if not owner or not repo_name:
-        raise typer.BadParameter("--repo must use owner/repo format")
+    if _retrieved_evidence_is_weak(artifacts):
+        typer.echo(WEAK_EVIDENCE_WARNING)
 
     try:
-        artifacts = retrieve_relevant_artifacts(owner, repo_name, question)
-    except IndexNotFoundError:
-        typer.echo(f"No index found for {owner}/{repo_name}.")
-        typer.echo(f"Run: codearch index https://github.com/{owner}/{repo_name}")
+        answer = answer_question(question, artifacts)
+    except GroqConfigurationError as exc:
+        typer.echo(str(exc))
         raise typer.Exit(code=1)
 
-    if artifacts and artifacts[0]["distance"] > WEAK_RESULT_DISTANCE_THRESHOLD:
-        typer.echo(
-            "Warning: retrieved artifacts may be weak matches for this question."
-        )
-
-    typer.echo("Top retrieved artifacts:")
-    for artifact in artifacts:
-        metadata = artifact.get("metadata") or {}
-        typer.echo(f"- source: {artifact['source']}")
-        typer.echo(f"  type: {metadata.get('type', '')}")
-        typer.echo(f"  distance: {artifact['distance']}")
-        typer.echo(f"  text: {artifact['text'][:500]}")
+    typer.echo("Question:")
+    typer.echo(question)
+    typer.echo("")
+    typer.echo("Historical Findings")
+    typer.echo("")
+    typer.echo(answer)
+    typer.echo("")
+    typer.echo("Sources:")
+    for source in _sources_used(answer, artifacts):
+        typer.echo(f"- {source}")
 
 
 @app.command()
-def context(change_request: str):
-    """Placeholder for future change context generation."""
-    typer.echo(f"Context placeholder for: {change_request}")
+def context(change_request: str, repo: str = typer.Option(..., "--repo")):
+    """Prepare historical context for a planned code change."""
+    _configure_terminal_output()
+    owner, repo_name = _parse_repo_option(repo)
+    artifacts = _retrieve_artifacts_or_exit(owner, repo_name, change_request)
+
+    if _retrieved_evidence_is_weak(artifacts):
+        typer.echo(WEAK_EVIDENCE_WARNING)
+
+    try:
+        context_pack = generate_context_pack(change_request, artifacts)
+    except GroqConfigurationError as exc:
+        typer.echo(str(exc))
+        raise typer.Exit(code=1)
+
+    separator = "=" * 80
+    typer.echo(separator)
+    typer.echo("")
+    typer.echo("CHANGE REQUEST")
+    typer.echo("")
+    typer.echo(change_request)
+    typer.echo("")
+    typer.echo(separator)
+    typer.echo("")
+    typer.echo(context_pack)
+    typer.echo("")
+    typer.echo(separator)
+    typer.echo("")
+    typer.echo("SOURCES")
+    typer.echo("")
+    for source in _unique_sources(artifacts):
+        typer.echo(f"- {source}")
 
 
 def _indexed_artifact_counts(artifacts: list[dict]) -> dict[str, int]:
@@ -165,6 +213,55 @@ def _indexed_artifact_counts(artifacts: list[dict]) -> dict[str, int]:
             counts[count_key] += 1
 
     return counts
+
+
+def _parse_repo_option(repo: str) -> tuple[str, str]:
+    if "/" not in repo:
+        raise typer.BadParameter("--repo must use owner/repo format")
+
+    owner, repo_name = repo.split("/", maxsplit=1)
+    if not owner or not repo_name:
+        raise typer.BadParameter("--repo must use owner/repo format")
+
+    return owner, repo_name
+
+
+def _retrieve_artifacts_or_exit(owner: str, repo: str, query: str) -> list[dict]:
+    try:
+        return retrieve_relevant_artifacts(owner, repo, query)
+    except IndexNotFoundError:
+        typer.echo(f"No index found for {owner}/{repo}.")
+        typer.echo(f"Run: codearch index https://github.com/{owner}/{repo}")
+        raise typer.Exit(code=1)
+
+
+def _retrieved_evidence_is_weak(artifacts: list[dict]) -> bool:
+    if not artifacts:
+        return False
+
+    artifact_types = {
+        (artifact.get("metadata") or {}).get("type") for artifact in artifacts
+    }
+    only_commit_evidence = artifact_types == {"commit"}
+    top_distance_is_weak = artifacts[0]["distance"] > WEAK_EVIDENCE_DISTANCE_THRESHOLD
+
+    return only_commit_evidence or top_distance_is_weak
+
+
+def _sources_used(answer: str, artifacts: list[dict]) -> list[str]:
+    sources = _unique_sources(artifacts)
+    cited_sources = [source for source in sources if source in answer]
+    return cited_sources or sources
+
+
+def _unique_sources(artifacts: list[dict]) -> list[str]:
+    sources = []
+    for artifact in artifacts:
+        source = artifact.get("source")
+        if source and source not in sources:
+            sources.append(source)
+
+    return sources
 
 
 def _print_indexing_plan(owner: str, repo: str, mode: str):
